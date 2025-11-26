@@ -39,9 +39,17 @@ endif
 # OpenCV streaming app (requires OpenCV)
 opencv_app_dep = dependency('opencv4', required : false)
 if opencv_app_dep.found()
+    # AprilTag OpenCV is optional - add it if available
+    rpicam_opencv_stream_deps = [libcamera_dep, opencv_app_dep]
+    
+    # Check if AprilTag OpenCV integration is available
+    if enable_apriltag_opencv and apriltag_opencv_dep.found()
+        rpicam_opencv_stream_deps += apriltag_opencv_dep
+    endif
+    
     rpicam_opencv_stream = executable('rpicam-opencv-stream', files('rpicam_opencv_stream.cpp'),
                                       include_directories : include_directories('..'),
-                                      dependencies: [libcamera_dep, opencv_app_dep],
+                                      dependencies: rpicam_opencv_stream_deps,
                                       link_with : rpicam_app,
                                       install : true)
 endif

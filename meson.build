@@ -58,6 +58,7 @@ subdir('output')
 subdir('post_processing_stages')
 subdir('preview')
 subdir('utils')
+subdir('AprilTag')
 
 configure_file(output : 'config.h', configuration : conf_data)
 
