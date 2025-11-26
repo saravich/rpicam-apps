@@ -28,16 +28,20 @@ rpicam_jpeg = executable('rpicam-jpeg', files('rpicam_jpeg.cpp'),
                          link_with : rpicam_app,
                          install : true)
 
-rpicam_live_record = executable('rpicam-live-record', files('rpicam_live_record.cpp'),
-                                include_directories : include_directories('..'),
-                                dependencies: [libcamera_dep, boost_dep],
-                                link_with : rpicam_app,
-                                install : true)
-
 if enable_tflite
     rpicam_detect = executable('rpicam-detect', files('rpicam_detect.cpp'),
                                include_directories : include_directories('..'),
                                dependencies: [libcamera_dep, boost_dep],
                                link_with : rpicam_app,
                                install : true)
+endif
+
+# OpenCV streaming app (requires OpenCV)
+opencv_app_dep = dependency('opencv4', required : false)
+if opencv_app_dep.found()
+    rpicam_opencv_stream = executable('rpicam-opencv-stream', files('rpicam_opencv_stream.cpp'),
+                                      include_directories : include_directories('..'),
+                                      dependencies: [libcamera_dep, opencv_app_dep],
+                                      link_with : rpicam_app,
+                                      install : true)
 endif
