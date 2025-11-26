@@ -7,6 +7,9 @@
 
 #include <chrono>
 
+#include "apriltag_opencv.h"
+#include "apriltag_family.h"
+
 #include "core/rpicam_app.hpp"
 #include "core/options.hpp"
 #include "core/buffer_sync.hpp"
@@ -97,6 +100,28 @@ static void event_loop(RPiCamApp &app)
 
 	LOG(1, "Streaming camera feed. Press 'q' or ESC to quit.");
 	LOG(1, "Window will stay open until you press 'q' or ESC, or timeout is reached.");
+
+	// Initialize AprilTag detector
+	apriltag_family_t *tf = apriltag_family_create("tag36h11");
+	if (!tf)
+	{
+		LOG_ERROR("Failed to create AprilTag family (tag36h11)");
+		throw std::runtime_error("AprilTag initialization failed");
+	}
+
+	apriltag_detector_t *td = apriltag_detector_create();
+	apriltag_detector_add_family(td, tf);
+	
+	// Configure detector (adjust these as needed)
+	td->quad_decimate = 2.0;  // Decimate input image for faster processing
+	td->quad_sigma = 0.0;     // Apply low-pass blur (0 = disabled)
+	td->nthreads = 4;         // Number of threads
+	td->debug = 0;            // Debug mode
+	td->refine_edges = 1;     // Spend more time aligning edges
+	td->refine_decode = 0;    // Spend more time decoding tags
+	td->refine_pose = 0;      // Spend more time computing pose
+
+	LOG(1, "AprilTag detector initialized (tag36h11 family)");
 
 	// Skip first frame to ensure camera is fully initialized
 	bool first_frame = true;
@@ -277,6 +302,51 @@ static void event_loop(RPiCamApp &app)
 			{
 				display_frame = bgr_frame;
 			}
+
+			// Convert to grayscale for AprilTag detection
+			Mat gray;
+			cvtColor(display_frame, gray, COLOR_BGR2GRAY);
+
+			// Run AprilTag detection
+			image_u8_t *im8 = cv2im8_copy(gray);
+			zarray_t *detections = apriltag_detector_detect(td, im8);
+
+			// Draw detections on the frame
+			if (zarray_size(detections) > 0)
+			{
+				LOG(1, "Detected " << zarray_size(detections) << " AprilTag(s)");
+
+				for (int i = 0; i < zarray_size(detections); i++)
+				{
+					apriltag_detection_t *det;
+					zarray_get(detections, i, &det);
+
+					// Draw tag outline (4 corners)
+					for (int j = 0; j < 4; j++)
+					{
+						int next_j = (j + 1) % 4;
+						cv::Point pt1(det->p[j][0], det->p[j][1]);
+						cv::Point pt2(det->p[next_j][0], det->p[next_j][1]);
+						line(display_frame, pt1, pt2, Scalar(0, 255, 0), 2);
+					}
+
+					// Draw tag center
+					cv::Point center(det->c[0], det->c[1]);
+					circle(display_frame, center, 5, Scalar(0, 0, 255), -1);
+
+					// Draw tag ID
+					std::string id_text = "ID: " + std::to_string(det->id);
+					cv::Point text_pos(det->c[0] - 20, det->c[1] - 10);
+					putText(display_frame, id_text, text_pos, FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 255), 2);
+					putText(display_frame, id_text, text_pos, FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
+
+					LOG(2, "Tag ID: " << det->id << " at (" << det->c[0] << ", " << det->c[1] << ")");
+				}
+			}
+
+			// Clean up detections
+			apriltag_detections_destroy(detections);
+			image_u8_destroy(im8);
 			
 			imshow(window_name, display_frame);
 
@@ -310,6 +380,11 @@ static void event_loop(RPiCamApp &app)
 			continue;
 		}
 	}
+
+	// Clean up AprilTag detector
+	apriltag_detector_destroy(td);
+	apriltag_family_destroy(tf);
+	LOG(1, "AprilTag detector cleaned up");
 
 	destroyWindow(window_name);
 }
