@@ -1,0 +1,29 @@
+# AprilTag Pose Estimation Configuration File
+# This file contains camera calibration parameters for pose estimation
+# 
+# Usage: rpicam-opencv-stream --pose-config apriltag_pose_config.yaml
+
+# Camera intrinsic parameters
+# These should be obtained from camera calibration
+# If not provided, they will be auto-estimated from image dimensions
+camera:
+  fx: 2719.0    # Focal length X in pixels
+  fy: 2716.0    # Focal length Y in pixels
+  cx: 1640.0    # Principal point X (usually image width / 2)
+  cy: 1232.0    # Principal point Y (usually image height / 2)
+
+# AprilTag physical properties
+tag:
+  size: 0.14   # Physical size of the AprilTag in meters (e.g., 0.1 = 10cm)
+
+# Pose estimation settings
+pose:
+  enabled: 1  # 1 to enable pose estimation, 0 to disable
+
+# Notes:
+# - Command-line arguments override values in this config file
+# - If fx, fy, cx, or cy are 0 or not specified, they will be auto-estimated
+# - For accurate pose estimation, calibrate your camera using OpenCV's calibration tools
+# - Example calibration command:
+#   opencv_calibration -w 9 -h 6 -s 0.025 -o camera_calibration.yaml
+

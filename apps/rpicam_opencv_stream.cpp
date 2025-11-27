@@ -6,6 +6,10 @@
  */
 
 #include <chrono>
+#include <vector>
+#include <sstream>
+#include <iomanip>
+#include <fstream>
 
 #include "apriltag_opencv.h"
 #include "apriltag_family.h"
@@ -16,11 +20,51 @@
 
 #include <opencv2/opencv.hpp>
 #include <opencv2/imgproc.hpp>
+#include <opencv2/calib3d.hpp>
 
 using namespace cv;
 
+// Pose estimation parameters (can be set via command line)
+struct PoseEstimationParams {
+	double tag_size = 0.1;  // Tag size in meters (default: 10cm)
+	double fx = 0.0;        // Focal length X (0 = auto-estimate)
+	double fy = 0.0;        // Focal length Y (0 = auto-estimate)
+	double cx = 0.0;        // Principal point X (0 = auto-estimate)
+	double cy = 0.0;        // Principal point Y (0 = auto-estimate)
+	bool enabled = true;   // Enable pose estimation
+};
+
+
+// Initialize pose estimation parameters
+// Edit these values directly in the code to set camera parameters
+PoseEstimationParams init_pose_params()
+{
+	PoseEstimationParams params;
+	
+	// ============================================
+	// CAMERA PARAMETERS - EDIT THESE VALUES
+	// ============================================
+	
+	// Tag size in meters (physical size of your AprilTag)
+	params.tag_size = 0.14;  // e.g., 0.14 = 14cm
+	
+	// Camera intrinsic parameters
+	// Set to 0.0 to auto-estimate from image dimensions
+	params.fx = 2719.0;  // Focal length X in pixels
+	params.fy = 2716.0;  // Focal length Y in pixels
+	params.cx = 1640.0;  // Principal point X (0 = image center)
+	params.cy = 1232.0;  // Principal point Y (0 = image center)
+	
+	// Enable/disable pose estimation
+	params.enabled = true;
+	
+	// ============================================
+	
+	return params;
+}
+
 // The main event loop for the application.
-static void event_loop(RPiCamApp &app)
+static void event_loop(RPiCamApp &app, const PoseEstimationParams &pose_params)
 {
 	Options const *options = app.GetOptions();
 
@@ -122,6 +166,45 @@ static void event_loop(RPiCamApp &app)
 	td->refine_pose = 0;      // Spend more time computing pose
 
 	LOG(1, "AprilTag detector initialized (tag36h11 family)");
+
+	// Pose estimation setup
+	Mat camera_matrix;
+	Mat dist_coeffs = Mat::zeros(4, 1, CV_64F);
+	std::vector<Point3d> object_points;
+	
+	if (pose_params.enabled)
+	{
+		// Camera intrinsic parameters
+		// Use provided values or auto-estimate from image dimensions
+		double fx = pose_params.fx > 0 ? pose_params.fx : static_cast<double>(display_width);
+		double fy = pose_params.fy > 0 ? pose_params.fy : static_cast<double>(display_height);
+		double cx = pose_params.cx > 0 ? pose_params.cx : static_cast<double>(display_width) / 2.0;
+		double cy = pose_params.cy > 0 ? pose_params.cy : static_cast<double>(display_height) / 2.0;
+		
+		// Camera matrix
+		camera_matrix = (Mat_<double>(3, 3) <<
+			fx, 0, cx,
+			0, fy, cy,
+			0, 0, 1);
+		
+		// 3D object points for AprilTag (in tag coordinate system)
+		// Tag corners in 3D space: center at origin, tag in XY plane
+		// Standard AprilTag: corners at (-1,-1), (1,-1), (1,1), (-1,1) in tag units
+		// We scale by tag_size/2 to get actual dimensions
+		double half_size = pose_params.tag_size / 2.0;
+		object_points.push_back(Point3d(-half_size, -half_size, 0));  // Bottom-left
+		object_points.push_back(Point3d(half_size, -half_size, 0));   // Bottom-right
+		object_points.push_back(Point3d(half_size, half_size, 0));     // Top-right
+		object_points.push_back(Point3d(-half_size, half_size, 0));    // Top-left
+		
+		LOG(1, "Pose estimation enabled");
+		LOG(1, "Tag size: " << pose_params.tag_size << "m");
+		LOG(1, "Camera intrinsics: fx=" << fx << ", fy=" << fy << ", cx=" << cx << ", cy=" << cy);
+	}
+	else
+	{
+		LOG(1, "Pose estimation disabled");
+	}
 
 	// Skip first frame to ensure camera is fully initialized
 	bool first_frame = true;
@@ -340,7 +423,67 @@ static void event_loop(RPiCamApp &app)
 					putText(display_frame, id_text, text_pos, FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 255), 2);
 					putText(display_frame, id_text, text_pos, FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 0), 1);
 
-					LOG(2, "Tag ID: " << det->id << " at (" << det->c[0] << ", " << det->c[1] << ")");
+					// Pose estimation
+					if (pose_params.enabled && !object_points.empty())
+					{
+						// Convert detected corners to image points
+						std::vector<Point2d> image_points;
+						for (int j = 0; j < 4; j++)
+						{
+							image_points.push_back(Point2d(det->p[j][0], det->p[j][1]));
+						}
+						
+						// Estimate pose using solvePnP
+						Mat rvec, tvec;  // Rotation and translation vectors
+						bool success = solvePnP(object_points, image_points, camera_matrix, dist_coeffs, rvec, tvec);
+						
+						if (success)
+						{
+							// Draw 3D coordinate axes to visualize pose
+							// Axes length: 30% of tag size
+							double axis_length = pose_params.tag_size * 0.3;
+							
+							// 3D points for axes endpoints
+							std::vector<Point3d> axis_points;
+							axis_points.push_back(Point3d(0, 0, 0));           // Origin
+							axis_points.push_back(Point3d(axis_length, 0, 0)); // X axis (red)
+							axis_points.push_back(Point3d(0, axis_length, 0)); // Y axis (green)
+							axis_points.push_back(Point3d(0, 0, -axis_length)); // Z axis (blue) - negative because camera looks down +Z
+							
+							// Project 3D points to 2D
+							std::vector<Point2d> projected_points;
+							projectPoints(axis_points, rvec, tvec, camera_matrix, dist_coeffs, projected_points);
+							
+							// Draw axes
+							Point2d origin = projected_points[0];
+							line(display_frame, origin, projected_points[1], Scalar(0, 0, 255), 3); // X axis - Red
+							line(display_frame, origin, projected_points[2], Scalar(0, 255, 0), 3); // Y axis - Green
+							line(display_frame, origin, projected_points[3], Scalar(255, 0, 0), 3); // Z axis - Blue
+							
+							// Draw axis labels
+							putText(display_frame, "X", projected_points[1], FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 255), 2);
+							putText(display_frame, "Y", projected_points[2], FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 255, 0), 2);
+							putText(display_frame, "Z", projected_points[3], FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 0, 0), 2);
+							
+							// Display pose information
+							double distance = sqrt(tvec.at<double>(0)*tvec.at<double>(0) + 
+							                       tvec.at<double>(1)*tvec.at<double>(1) + 
+							                       tvec.at<double>(2)*tvec.at<double>(2));
+							
+							std::ostringstream dist_str;
+							dist_str << std::fixed << std::setprecision(2) << distance;
+							std::string pose_text = "D: " + dist_str.str() + "m";
+							cv::Point pose_text_pos(det->c[0] - 30, det->c[1] + 20);
+							putText(display_frame, pose_text, pose_text_pos, FONT_HERSHEY_SIMPLEX, 0.4, Scalar(255, 255, 0), 2);
+							
+							LOG(2, "Tag ID: " << det->id << " at (" << det->c[0] << ", " << det->c[1] 
+							    << "), distance: " << distance << "m");
+						}
+						else
+						{
+							LOG(2, "Tag ID: " << det->id << " at (" << det->c[0] << ", " << det->c[1] << ") - pose estimation failed");
+						}
+					}
 				}
 			}
 
@@ -393,9 +536,14 @@ int main(int argc, char *argv[])
 {
 	try
 	{
+		// Initialize pose estimation parameters
+		// Edit init_pose_params() function to set camera parameters
+		PoseEstimationParams pose_params = init_pose_params();
+		
 		RPiCamApp app;
 		Options *options = app.GetOptions();
 		
+		// Parse standard options
 		if (options->Parse(argc, argv))
 		{
 			// Disable the default preview window since we're using OpenCV
@@ -404,8 +552,21 @@ int main(int argc, char *argv[])
 			
 			if (options->Get().verbose >= 2)
 				options->Get().Print();
+			
+			// Log pose estimation parameters
+			if (pose_params.enabled)
+			{
+				LOG(1, "Pose estimation enabled");
+				LOG(1, "Tag size: " << pose_params.tag_size << "m");
+				LOG(1, "Camera fx: " << pose_params.fx << ", fy: " << pose_params.fy);
+				LOG(1, "Camera cx: " << pose_params.cx << ", cy: " << pose_params.cy);
+			}
+			else
+			{
+				LOG(1, "Pose estimation disabled");
+			}
 
-			event_loop(app);
+			event_loop(app, pose_params);
 		}
 	}
 	catch (std::exception const &e)
